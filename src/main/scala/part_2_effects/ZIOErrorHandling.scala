@@ -3,7 +3,8 @@ package part_2_effects
 import zio.*
 
 import java.net.NoRouteToHostException
-import scala.sys.process.processInternal.IOException
+//import scala.sys.process.processInternal.IOException
+import java.io.IOException
 import scala.util.Try
 
 object ZIOErrorHandling extends ZIOAppDefault {
