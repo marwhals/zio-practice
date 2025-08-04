@@ -1,7 +1,7 @@
 package part_3_concurrency
 
-import zio.{Fiber, ZIO, ZIOAppDefault}
-import com.utils._
+import zio.{Exit, Fiber, ZIO, ZIOAppDefault}
+import utils.*
 
 /**
  * Paralellism vs Concurrency refresherrrrrrrrrrrr
@@ -18,7 +18,7 @@ import com.utils._
 
 object Fibers extends ZIOAppDefault {
 
-  val meaningOFLife = ZIO.succeed(42)
+  val meaningOfLife = ZIO.succeed(42)
   val favLang = ZIO.succeed("Scala")
 
   // Fiber = lightweight thread - descriptions of a computation that runs on xeo runtime
@@ -77,6 +77,6 @@ object Fibers extends ZIOAppDefault {
     message <- fiber.join
   } yield message
 
-  def run = chainedFiber.debugThread
+  def run = chainedFibers.debugThread
 //  def run = runOnAnotherThread(meaningOfLife).debugThread
 }
