@@ -2,6 +2,45 @@ package part_2_effects
 
 import zio.*
 
+import java.util.concurrent.TimeUnit
+
+/**
+ * Notes
+ * - Layers
+ *  - Standard dependency injection is clunky:
+ *    - Doesn't scale
+ *    - Becomes hard to debug/understand
+ *    - Needs serious discipline to do well
+ *    - Instantiates services at the point of call
+ *    - Can easily leak resources
+ *  - Alternative: ZIO dependencies
+ *    - make them as needed when they are needed
+ *    - pass them once at the "end of the world"
+ *  - Benefits
+ *    - business logic uncluttered by instantiation of dependencies
+ *    - Resources used once at the end of the application
+ *    - Logic is easily testable by passing a different resource implementation (e.g. a mocked one)
+ *
+ * - Layers API
+ * --- Like regular ZIOs
+ * ----- ZLayer.succeed(ConnectionPool.create(10))
+ * --- Create a layer out of function arguments (magic macros)
+ * ----- ZLayer.fromFunction(UserDatabase.create _) //NOTE: underscore required for explicit eta-expansion in Scala 2
+ * --- Composing Layers
+ * ----- Vertical: Consumes dependencies of the first, produces values of the last
+ * ----- Horizontal: Consumes dependencies of both, produces values of both
+ * --> see "val databaseLayerFull......
+ * --> see "val subscriptionRequirementsLayer....................
+ *
+ * Layers API --- Macro based
+ * - Magic auto-wiring
+ * --- Macro-based inspection of type signatures, graph connections
+ * --- Rich compiler errors for missing layers, duplicate layers
+ * --- Pretty-printed graph presentation (text or Mermaid links)
+ *
+ */
+
+
 object ZIODependencies extends ZIOAppDefault {
 
   // app to subscribe users to newsletter
@@ -14,10 +53,12 @@ object ZIODependencies extends ZIOAppDefault {
         _ <- userDatabase.insert(user)
       } yield ()
   }
+
   class EmailService {
     def email(user: User): Task[Unit] =
       ZIO.succeed(s"You've just been subscribed to Rock the JVM, Welcome, ${user.name}").unit
   }
+
   class UserDatabase(connectionPool: ConnectionPool) {
     def insert(user: User): Task[Unit] = for {
       conn <- connectionPool.get
@@ -36,22 +77,33 @@ object ZIODependencies extends ZIOAppDefault {
   }
 
   object UserSubscription {
-    def create(emailService: EmailService, userDatabase: UserDatabase) =
-      new UserSubscription(emailService, userDatabase)
+    def create(emailService: EmailService, userDatabase: UserDatabase) = new UserSubscription(emailService, userDatabase)
+
+    val live: ZLayer[EmailService with UserDatabase, Nothing, UserSubscription] =
+      ZLayer.fromFunction(create _)
   }
 
   object EmailService {
     def create(): EmailService = new EmailService
+
+    val live: ZLayer[Any, Nothing, EmailService] =
+      ZLayer.succeed(create())
   }
 
   object UserDatabase {
-    def create(connectionPool: ConnectionPool) =
+    def create(connectionPool: ConnectionPool): UserDatabase =
       new UserDatabase(connectionPool)
+
+    val live: ZLayer[ConnectionPool, Nothing, UserDatabase] =
+      ZLayer.fromFunction(create)
   }
 
   object ConnectionPool {
-    def create(nConnections: Int) =
+    def create(nConnections: Int): ConnectionPool =
       new ConnectionPool(nConnections)
+
+    def live(nConnections: Int): ZLayer[Any, Nothing, ConnectionPool] =
+      ZLayer.succeed(create(nConnections))
   }
 
   val subscriptionService = ZIO.succeed( // This pattern is known as dependency injection......many ways to do this
@@ -72,9 +124,8 @@ object ZIODependencies extends ZIOAppDefault {
    *  - passing dependencies multiple times can lead to errors in your code. Can leak resources that you are not aware of.
    */
 
-
   def subscribe(user: User): ZIO[Any, Throwable, Unit] = for {
-    sub  <- subscriptionService // service is instantiated at the point of call
+    sub <- subscriptionService // service is instantiated at the point of call
     _ <- sub.subscribeUser(user)
   } yield ()
 
@@ -104,15 +155,71 @@ object ZIODependencies extends ZIOAppDefault {
    *
    */
 
-  def run = program_v2.provideLayer(
-    ZLayer.succeed(
-      UserSubscription.create(
-        EmailService.create(),
-        UserDatabase.create(
-          ConnectionPool.create(10)
-        )
-      )
-    )
-  ) //provide in Scala 2 - potential macro issues
+  /**
+   * ZLayers
+   *
+   */
+
+  val connectionPoolLayer: ZLayer[Any, Nothing, ConnectionPool] = ZLayer.succeed(ConnectionPool.create(10))
+  // a layer that requires a dependency (higher layer) can be built with ZLayer.fromFunction
+  // (and automatically fetch the function arguments and place them into the ZLayer's dependency / environment type argument)
+  val databaseLayer: ZLayer[ConnectionPool, Nothing, UserDatabase] =
+    ZLayer.fromFunction(UserDatabase.create _)
+  val emailServiceLayer: ZLayer[Any, Nothing, EmailService] =
+    ZLayer.succeed(EmailService.create())
+  val userSubscriptionServiceLayer: ZLayer[UserDatabase with EmailService, Nothing, UserSubscription] =
+    ZLayer.fromFunction(UserSubscription.create _)
+
+  // composing layers
+  // vertical composition >>>
+  val databaseLayerFull: ZLayer[Any, Nothing, UserDatabase] = connectionPoolLayer >>> databaseLayer
+  // horizontal composition: combines the dependencies of both layer AND the values of both layers
+  val subscriptionRequirementsLayer: ZLayer[Any, Nothing, UserDatabase with EmailService] = databaseLayerFull ++ emailServiceLayer
+  // mix and match
+  val userSubscriptionLayer: ZLayer[Any, Nothing, UserSubscription] =
+    subscriptionRequirementsLayer >>> userSubscriptionServiceLayer
+
+  // best practice: write "factory" methods exposing layers in the companion objects of the services
+  val runnableProgram = program_v2.provide(userSubscriptionLayer)
+
+  // magic
+  val runnableProgram_v2 = program_v2.provide(
+    UserSubscription.live,
+    EmailService.live,
+    UserDatabase.live,
+    ConnectionPool.live(10),
+    // ZIO will tell you if you're missing a layer
+    // ZIO will tell you if you have multiple layers of the same type
+    // ZIO can also generate the dependency graph
+    ZLayer.Debug.tree,
+    ZLayer.Debug.mermaid,
+  )
+
+  // magic version 2
+  val userSubscriptionLayer_v2: ZLayer[Any, Nothing, UserSubscription] = ZLayer.make[UserSubscription](
+    UserSubscription.live,
+    EmailService.live,
+    UserDatabase.live,
+    ConnectionPool.live(10),
+  )
+
+  // passthrough
+  val dbWithPoolLayer: ZLayer[ConnectionPool, Nothing, ConnectionPool with UserDatabase] = UserDatabase.live.passthrough
+  // service = take a dep and expose it as a value to further layers
+  val dbService = ZLayer.service[UserDatabase]
+  // launch - creates a ZIO that uses the services and never finishes
+  val subscriptionLaunch: ZIO[EmailService with UserDatabase, Nothing, Nothing] = UserSubscription.live.launch
+  // memoization
+
+  /*
+    Already provides services: Clock, Random, System, Console
+   */
+  val getTime = Clock.currentTime(TimeUnit.SECONDS)
+  val randomValue = Random.nextInt
+  val sysVariable = System.env("HADOOP_HOME")
+  val printlnEffect = Console.printLine("This is ZIO")
+
+  // TODO test out the mermaid generation
+  def run = runnableProgram_v2
 
 }
