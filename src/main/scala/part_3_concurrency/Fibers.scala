@@ -21,7 +21,7 @@ object Fibers extends ZIOAppDefault {
   val meaningOfLife = ZIO.succeed(42)
   val favLang = ZIO.succeed("Scala")
 
-  // Fiber = lightweight thread - descriptions of a computation that runs on xeo runtime
+  // Fiber = lightweight thread - descriptions of a computation that runs on ZIO/xeo(XD) runtime
   def createFiber: Fiber[Throwable, String] = ??? //Impossible to create manually
 
   def sameThreadIO = for {
