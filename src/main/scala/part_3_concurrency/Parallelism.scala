@@ -42,7 +42,7 @@ object Parallelism extends ZIOAppDefault {
   val printlnParallel = ZIO.foreachPar((1 to 10).toList)(i => ZIO.succeed(println(i)))
 
   // reduceAllPar, mergeAllPar
-  val sumPar = ZIO.reduceAllPar(ZIO.succeed(0). effects)(_ + _)
+  val sumPar = ZIO.reduceAllPar(ZIO.succeed(0), effects)(_ + _)
   val sumPar_v2 = ZIO.mergeAllPar(effects)(0)(_ + _)
   
   /*
