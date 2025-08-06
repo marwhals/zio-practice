@@ -143,6 +143,128 @@ object TransactionalEffects extends ZIOAppDefault {
   // TPriorityQueue
   val maxQueue: USTM[TPriorityQueue[Int]] = TPriorityQueue.make(3,4,1,2,5)
 
+  /*
+   * Concurrent coordination
+   *
+   */
+  // same API
+  val tPromiseEffect: USTM[TPromise[String, Int]] = TPromise.make[String, Int]
+  // await, poll
+  val tPromiseAwait: STM[String, Int] = for {
+    p <- tPromiseEffect
+    res <- p.await
+  } yield res
+  // succeed/fail/complete
+  val demoSucceed: USTM[Unit] = for {
+    p <- tPromiseEffect
+    _ <- p.succeed(100)
+  } yield ()
+
+  // TSemaphore
+  val tSemaphoreEffect: USTM[TSemaphore] = TSemaphore.make(10)
+  // acquire + acquireN
+  val semaphoreAcq: USTM[Unit] = for {
+    sem <- tSemaphoreEffect
+    _ <- sem.acquire
+  } yield ()
+  // release + releaseN
+  val semaphoreRel: USTM[Unit] = for {
+    sem <- tSemaphoreEffect
+    _ <- sem.release
+  } yield ()
+  // withPermit
+  val semWithPermit: UIO[Int] = tSemaphoreEffect.commit.flatMap { sem =>
+    sem.withPermit {
+      ZIO.succeed(42)
+    }
+  }
+
+  // TReentrantLock - can acquire the same lock multiple times without deadlock
+  // The readers-writers problem
+  // has two locks: read lock (lower priority) and write lock (higher priority)
+  val reentrantLockEffect = TReentrantLock.make
+  val demoReentrantLock = for {
+    lock <- reentrantLockEffect
+    _ <- lock.acquireRead // acquires the read lock
+    _ <- STM.succeed(100) // critical section, only those that acquire read lock can access
+    rl <- lock.readLocked // status of the lock, whether is read-locked, true in this case
+    wl <- lock.writeLocked // same for writer
+  } yield ()
+
+  def demoReadersWriters(): UIO[Unit] = {
+    def read(i: Int, lock: TReentrantLock): UIO[Unit] = for {
+      _ <- lock.acquireRead.commit
+      // critical region
+      _ <- ZIO.succeed(s"[task $i] taken the read lock, reading...").debugThread
+      time <- Random.nextIntBounded(1000)
+      _ <- ZIO.sleep(time.millis)
+      res <- Random.nextIntBounded(100) // actual computation
+      _ <- ZIO.succeed(s"[task $i] read value: $res").debugThread
+      // critical region end
+      _ <- lock.releaseRead.commit
+    } yield ()
+
+    def write(lock: TReentrantLock): UIO[Unit] = for {
+      // writer
+      _ <- ZIO.sleep(200.millis)
+      _ <- ZIO.succeed("[writer] trying to write...").debugThread
+      _ <- lock.acquireWrite.commit
+      // critical region
+      _ <- ZIO.succeed("[writer] I'm able to write!").debugThread
+      // critical region end
+      _ <- lock.releaseWrite.commit
+    } yield ()
+
+    for {
+      lock <- TReentrantLock.make.commit
+      readersFib <- ZIO.collectAllParDiscard((1 to 10).map(read(_, lock))).fork
+      writerFib <- write(lock).fork
+      _ <- readersFib.join
+      _ <- writerFib.join
+    } yield ()
+  }
+
   def run = loop(cannotExploit(), 1)
+
+  /**
+   * Software Transactional Memory
+   * - Atomic effects
+   * --- Have similar API's descriptions as ZIOs
+   * --- Cannot be created from arbitrary Scala code
+   * --- Cannot be "run"
+   * --- Evaluate to regular ZIOs
+   *
+   *
+   * Pros
+   * -- Atomicity guaranteed
+   * -- Familiar APIs
+   * -- Tools for complex CS problems
+   * Cons
+   * -- Have to replicate common programming structures
+   *
+   *
+   * STM Data Structures
+   * - Tools for general programming with transactional properties
+   * --- Creation is an STM effect
+   * --- All API calls are STM effects
+   * - STM Ref: atomic reference (doubles as transactional "variable")
+   * val aVariable: USTM[TRef[Int]] = TRef.make(42)
+   * - Array: mutable storage of elements - has array operations
+   * val specifiedValuesTArray: USTM[TArray[Int]] = TArray.make(1,2,3)
+   * - Set: mutable collection of unique elements - has set operations
+   * val specificValuesTSet: USTM[TSet[Int]] = TSet.make(1,2,3,3,5,5,5,8)
+   * - Map
+   * - Queue: FIFO - ordered mutable collection
+   * - Priority Queue: sorted mutable collection
+   *
+   * STM Coordination
+   * - TRef: atmoic reference for guards against race conditions
+   * - TPromise: notification mechanism
+   * - TSemaphore: controlled access to a critical region
+   * - TReentrantLock: combined primitive for readers-writers problem, with
+   * --- read lock which can be acquired multiple times
+   * --- write lock which can be acquired once
+   *
+   */
 
 }
