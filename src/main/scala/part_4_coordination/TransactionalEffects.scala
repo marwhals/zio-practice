@@ -258,7 +258,7 @@ object TransactionalEffects extends ZIOAppDefault {
    * - Priority Queue: sorted mutable collection
    *
    * STM Coordination
-   * - TRef: atmoic reference for guards against race conditions
+   * - TRef: atomic reference for guards against race conditions
    * - TPromise: notification mechanism
    * - TSemaphore: controlled access to a critical region
    * - TReentrantLock: combined primitive for readers-writers problem, with
