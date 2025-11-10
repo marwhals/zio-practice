@@ -1,27 +1,25 @@
 package part_2_effects
 
-import zio.{IO, RIO, Task, UIO, URIO, ZIO}
+import zio.{IO, RIO, Runtime, Task, Trace, UIO, URIO, Unsafe, ZIO}
 
 import scala.io.StdIn
-import scala.util.Try
 
 object ZIOEffects {
 
   /**
    * A simplified ZIO
-   *
-   *
    */
 
   // Consider R as the environment
-  case class MyZIO[-R, +E, +A](unsafeRun: R => Either[E, A]) {// May throw an exception. Wrap in a Try. Can only fail with a Java lang throwable. Not that helpful. Can use an either
+  // May throw an exception. Wrap in a Try. Can only fail with a Java lang throwable. Not that helpful. Can use an either
+  case class MyZIO[-R, +E, +A](unsafeRun: R => Either[E, A]) {
     def map[B](f: A => B): MyZIO[R, E, B] =
       MyZIO(r => unsafeRun(r) match {
         case Left(e) => Left(e)
         case Right(v) => Right(f(v))
       })
 
-    def flatMap[R1 <: R, E1 >: E, B](f: A => MyZIO[R1, E1, B]): MyZIO[R1, E1 ,B] =
+    def flatMap[R1 <: R, E1 >: E, B](f: A => MyZIO[R1, E1, B]): MyZIO[R1, E1, B] =
       MyZIO(r => unsafeRun(r) match {
         case Left(e) => Left(e)
         case Right(v) => f(v).unsafeRun(r)
@@ -65,8 +63,128 @@ object ZIOEffects {
   val aSuccessfulIO: IO[String, Int] = ZIO.succeed(34)
   val aFailedIO: IO[String, Int] = ZIO.fail("Something bad happened")
 
-  def main(args: Array[String]): Unit = {
-
+  /**
+   * Exercises
+   */
+  // 1 - sequence two ZIOs and take the value of the last one
+  def sequenceTakeLast[R, E, A, B](zioa: ZIO[R, E, A], ziob: ZIO[R, E, B]): ZIO[R, E, B] = {
+    zioa.flatMap(a => ziob.map(b => b))
   }
 
+  def sequenceTakeLast_v2[R, E, A, B](zioa: ZIO[R, E, A], ziob: ZIO[R, E, B]): ZIO[R, E, B] = {
+    for {
+      a <- zioa
+      b <- ziob
+    } yield b
+  }
+
+  def sequenceTakeLast_v3[R, E, A, B](zioa: ZIO[R, E, A], ziob: ZIO[R, E, B]): ZIO[R, E, B] =
+    zioa *> ziob // ZIO operator. See docs
+
+  // 2 - sequence two ZIOs and take the value of the first one
+  def sequenceTakeFirst[R, E, A, B](zioa: ZIO[R, E, A], ziob: ZIO[R, E, B]): ZIO[R, E, A] = {
+    zioa.flatMap(a => ziob.map(_ => a))
+  }
+
+  def sequenceTakeFirst_v2[R, E, A, B](zioa: ZIO[R, E, A], ziob: ZIO[R, E, B]): ZIO[R, E, A] = {
+    for {
+      a <- zioa
+      b <- ziob
+    } yield a
+  }
+
+  def sequenceTakeFirst_v3[R, E, A, B](zioa: ZIO[R, E, A], ziob: ZIO[R, E, B]): ZIO[R, E, A] = {
+    zioa <* ziob
+  }
+
+  // 3 - run a ZIO forever
+  def runForever[R, E, A](zio: ZIO[R, E, A]): ZIO[R, E, A] = {
+    zio.flatMap(_ => runForever(zio))
+  }
+
+  // Equivalent
+  def runForever_v2[R, E, A](zio: ZIO[R, E, A]): ZIO[R, E, A] = {
+    zio *> runForever_v2(zio)
+  }
+
+  /**
+   * Note: ZIO flatMaps implement something called trampolining. A term which ZIO allocates instances on the heap instead of the stack.
+   * - Evaluation is done in a tail recursive fashion behind the scenes ----> huge chains of ZIO are less of a problem.
+   * - ZIO evaluates the flatMaps on the heap in a tail recusive fashion.
+   */
+
+  val endlessLoop = runForever {
+    ZIO.succeed {
+      println("running.....")
+      Thread.sleep(1000)
+    }
+  }
+
+  // 4 - Convert the value of a ZIO to something else
+  def convert[R, E, A, B](zio: ZIO[R, E, A], value: B): ZIO[R, E, B] = {
+    zio.map(_ => value)
+  }
+
+  def convert_v2[R, E, A, B](zio: ZIO[R, E, A], value: B): ZIO[R, E, B] = {
+    zio.as(value)
+  }
+
+  // 5 - discard the value of a ZIO as a unit
+  def asUnit[R, E, A](zio: ZIO[R, E, A]): ZIO[R, E, Unit] = {
+    convert(zio, ())
+  }
+
+  //  def asUnit[R,E,A](zio: ZIO[R,E,A]): ZIO[R,E,Unit] = {
+  //    zio.unit
+  //  }
+  // 6 - recursion
+  def sum(n: Int): Int = {
+    if (n == 0) 0
+    else n + sum(n - 1) // will crash and run out of memory (no tail recursion)
+  }
+
+  def sumZIO(n: Int): UIO[Int] = {
+    if (n == 0) ZIO.succeed(0)
+    else for {
+      current <- ZIO.succeed(n)
+      prevSum <- sumZIO(n - 1)
+    } yield current + prevSum
+  }
+
+  // 7 - fibonacci - hint: use ZIO.suspend/ ZIO.suspend.succeeed
+  def fibo(n: Int): BigInt = {
+    if (n <= 2) 1
+    else fibo(n - 1) + fibo(n - 2)
+  }
+
+  def fiboZIO(n: Int): UIO[BigInt] = {
+    if (n <= 2) ZIO.succeed(1)
+    else for {
+      last <- ZIO.suspendSucceed(fiboZIO(n - 1)) //Required to delay evaluation and avoid crashing the stack
+      prev <- fiboZIO(n - 2)
+    } yield last + prev
+  }
+
+  def main(args: Array[String]): Unit = {
+    val runtime = Runtime.default
+
+    given trace: Trace = Trace.empty
+
+    Unsafe.unsafe { (u: Unsafe) =>
+      given uns: Unsafe = u
+
+      val firstEffect = ZIO.succeed {
+        println("computing first effect...")
+        Thread.sleep(1000)
+        1
+      }
+
+      val secondEffect = ZIO.succeed {
+        println("computing second effect...")
+        Thread.sleep(1000)
+        2
+      }
+      runtime.unsafe.run(sequenceTakeLast(firstEffect, secondEffect))
+    }
+  }
 }
