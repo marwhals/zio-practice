@@ -1,14 +1,15 @@
 package part_2_effects
 
 import scala.concurrent.Future
+import scala.io.StdIn
 
 /**
  * - Pure functional program = a big expression computing a value
  *  - referential transparency ---- can replace an expression with its value without changing the behaviour
- * - Expressions performing side effects are not replaceable
- *  i.e break referential transparency
+ *    - Expressions performing side effects are not replaceable
+ *    i.e break referential transparency
  *
- *  Effect properties
+ * Effect properties
  *    - It described what kind of computation it will perform
  *    - The type signature describes the value it will calculate
  *    - It separates effect description from effect execution (when externally visible effects are produced)
@@ -22,7 +23,7 @@ object Effects {
 
   // local reasoning - type signature describes the kind of computation that will be performed
   // referential transparency
-  val fiv = combine(2,3) // is equivalent to
+  val fiv = combine(2, 3) // is equivalent to
   val five_v2 = 2 + 3
   val five_v3 = 5
 
@@ -37,41 +38,42 @@ object Effects {
   // need side effects but functional programming is nice. Need to bridge this.
 
   /**
-    Effect properties:
-    - Local Reasoning: the type signature describes what type of computation it will perform
-    - Local Reasoning: the type signature describes the type of VALUE that it will produce
-    - if side effects are required, construction must be separate from the execution
+   * Effect properties:
+   * - Local Reasoning: the type signature describes what type of computation it will perform
+   * - Local Reasoning: the type signature describes the type of VALUE that it will produce
+   * - if side effects are required, construction must be separate from the execution
    */
 
-  /*
-    Example: Option = possibly absent value
-    - type signature describes the kind of computation = a possibly absent value
-    - type signature says that the computation returns an A, if the computation does produce something
-    - no side effects are needed
-    ----- Option is an effect
+  /**
+   * Example: Option = possibly absent value
+   * - type signature describes the kind of computation i.e a possibly absent value
+   * - type signature says that the computation returns an A, if the computation does produce something
+   * - no side effects are needed
+   * ----- Option is an effect
    */
   val anOption: Option[Int] = Option(42)
-  /*
-    Example 2: Future
-    - describes an asynchronous computation
-    - produces a value of type A, if it finishes and it's successful
-    - side effects are required, construction is not separate from execution
 
-    ------- Future is not an effect
+  /**
+   * Example 2: Future
+   * - describes an asynchronous computation
+   * - produces a value of type A, if it finishes, and it's successful
+   * - side effects are required, construction is not separate from execution
+   * ------- Future is not an effect
    */
 
   import scala.concurrent.ExecutionContext.Implicits.global
 
   val aFuture: Future[Int] = Future(42)
 
-  /*
-    Example 3: MyIO
-    - describes a computation which might perform side effects
-    - produces a value of type A if the computation is successful
-    - side effects are required, construction IS SEPARATE from execution
-
-    MyIO is an effect
+  /**
+   * Example 3: MyIO
+   * - describes a computation which might perform side effects
+   * - produces a value of type A if the computation is successful
+   * - side effects are required, construction IS SEPARATE from execution
+   *
+   * MyIO is an effect
    */
+
   case class MyIO[A](unsafeRun: () => A) { // A \lambda
     def map[B](f: A => B): MyIO[B] =
       MyIO(() => f(unsafeRun()))
@@ -86,17 +88,77 @@ object Effects {
   })
 
   /**
-   * TODO - Exercises - create some IO which
+   * Exercises - create some IO which
    *  1. measure the current time of the system
-   *     2. measure the duration of a computation
-   *    - use exercise 1
-   *    - use map/flatMap combinations of MyIO
-   *      3. read something from the console
-   *      4. print something to the console (e.g. "what's your name"), then read, then print a welcome message
+   *  2. measure the duration of a computation
+   *  - use exercise 1
+   *  - use map/flatMap combinations of MyIO
+   *    3. read something from the console
+   *    4. print something to the console (e.g. "what's your name"), then read, then print a welcome message
    */
 
+  // 1
+  val currentTime: MyIO[Long] = MyIO(() => System.currentTimeMillis())
+
+  // 2 - using for comprehension
+  def measure[A](computation: MyIO[A]): MyIO[(Long, A)] = for {
+    startTime <- currentTime
+    result <- computation
+    endTime <- currentTime
+  } yield (endTime - startTime, result)
+  // 2 - in terms of map and flatMap
+  def measure_v2[A](computation: MyIO[A]): MyIO[(Long, A)] = {
+    currentTime.flatMap { startTime =>
+      computation.flatMap { result =>
+        currentTime.map { endTime =>
+          (endTime - startTime, result)
+        }
+      }
+    }
+  }
+
+  // 2 alternative but equivalent
+  def measure_v3[A](computation: MyIO[A]): MyIO[(Long, A)] = {
+    MyIO { () =>
+      val startTime = System.currentTimeMillis()
+      val result = computation.unsafeRun()
+      val endTime = System.currentTimeMillis()
+      (endTime - startTime, result)
+    }
+  }
+
+  def demoMeasurement(): Unit = {
+    val computation = MyIO(() => {
+      println("Start computation")
+      Thread.sleep(1000)
+      println("Done!")
+      42
+    })
+
+    println(measure(computation).unsafeRun())
+    println(measure_v3(computation).unsafeRun())
+  }
+
+  // 3
+  val readLine: MyIO[String] = MyIO(() => StdIn.readLine())
+
+  // 4
+  def putStrLn(line: String): MyIO[Unit] = MyIO(() => println(line))
+
+
+  /**
+   * Resembles imperative code. Each line describes an effect.
+   * We are describing what will happen when the effect chain is evaluated
+   * --> IO Data type can be considered as a bridge between imperative programming and pure functional programming.
+   */
+  val program = for {
+    _ <- putStrLn("What's your name?")
+    name <- readLine
+    _ <- putStrLn(s"Welcome to Rock the JVM, $name!")
+  } yield ()
 
   def main(args: Array[String]): Unit = {
+    demoMeasurement()
   }
 
 }

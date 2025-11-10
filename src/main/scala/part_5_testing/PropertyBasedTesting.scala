@@ -1,8 +1,8 @@
 package part_5_testing
 
-import zio._
-import zio.test._
-import utils._
+import utils.*
+import zio.*
+import zio.test.*
 
 /**
  * Property-Based Testing
@@ -61,6 +61,7 @@ object PropertyBasedTesting extends ZIOSpecDefault {
   val flatMappedGenerator = filteredGenerator.flatMap(l => Gen.stringN(l)(Gen.alphaNumericChar))
 
   case class Uuid(uuid: String)
+
   // for-comprehension
   val uuidGenerator = for {
     part1 <- Gen.stringN(8)(Gen.alphaNumericChar)
@@ -83,5 +84,5 @@ object PropertyBasedTesting extends ZIOSpecDefault {
       val generatedListsZIO_v2 = generatedListsZIO.provideLayer(Sized.live(50))
       generatedListsZIO_v2.debugThread
     }
-
+  }
 }
