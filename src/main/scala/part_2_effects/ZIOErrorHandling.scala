@@ -5,15 +5,13 @@ import zio.*
 import java.net.NoRouteToHostException
 //import scala.sys.process.processInternal.IOException
 import java.io.IOException
-import scala.util.Try
+import scala.util.{Failure, Success, Try}
 
 object ZIOErrorHandling extends ZIOAppDefault {
-
   // ZIOs can fail
   val aFailedZIO = ZIO.fail("Something went wrong")
   val failedWithThrowable = ZIO.fail(new RuntimeException("Boom!"))
   val failedWithDescription = failedWithThrowable.mapError(_.getMessage)
-
   // attempt: run an effect that might throw an exception
   val badZIO = ZIO.succeed {
     println("Trying something")
@@ -52,35 +50,57 @@ object ZIOErrorHandling extends ZIOAppDefault {
    */
 
   val aTryToZIO: ZIO[Any, Throwable, Int] = ZIO.fromTry(Try(42 / 0)) // can fail with Throwable
-
   // either -> ZIO
   val anEither: Either[Int, String] = Right("Success!")
   val anEitherToZIO: ZIO[Any, Int, String] = ZIO.fromEither(anEither)
-
   // ZIO -> ZIO with Either as the value channel
   val eitherZIO = anAttempt.either
-
   // reverse
   val anAttempt_v2 = eitherZIO.absolve
-
   // option -> ZIO
   val anOption: ZIO[Any, Option[Nothing], Int] = ZIO.fromOption(Some(42))
 
   /**
-   * TODO - Exercise
+   * Exercise
    * - Implement a version of fromTry, fromOption, fromEither, either, absolve
-   * - Using fold and foldZIO
+   * -> using fold and foldZIO
    */
+
+  //  def try2ZIO[A](aTry: Try[A]): ZIO[Any, Throwable, A]
+  def try2ZIO[A](aTry: Try[A]): Task[A] = aTry match {
+    case Failure(exception) => ZIO.fail(exception)
+    case Success(value) => ZIO.succeed(value)
+  }
+
+  def either2ZIO[A, B](anEither: Either[A, B]): ZIO[Any, A, B] = anEither match {
+    case Left(value) => ZIO.fail(value)
+    case Right(value) => ZIO.succeed(value)
+  }
+
+  def option2ZIO[A](anOption: Option[A]): ZIO[Any, Option[Nothing], A] = anOption match {
+    case Some(value) => ZIO.succeed(value)
+    case None => ZIO.fail(None)
+  }
+
+  def zio2zioEither[R, A, B](zio: ZIO[R, A, B]): ZIO[R, Nothing, Either[A, B]] = zio.foldZIO(
+    error => ZIO.succeed(Left(error)),
+    value => ZIO.succeed(Right(value))
+  )
+
+  def absolveZIO[R, A, B](zio: ZIO[R, Nothing, Either[A, B]]): ZIO[R, A, B] = zio.flatMap {
+    case Left(e) => ZIO.fail(e)
+    case Right(v) => ZIO.succeed(v)
+  }
 
   /*
     Errors - Present in type signature of the ZIO (similar to "checked" exceptions)
-    Defects - Not present in the type signature, unforseen and not present in the ZIO type signature
+    Defects - Not present in the type signature, unforeseen and not present in the ZIO type signature
 
     ZIO[R,E,A] can finish with Exit[E,A]
     - Success[A] containing A
     - Cause[E]
       - Fail[E] containing the error
-      - Die(t: Throwable) which was unforseen
+      - Die(t: Throwable) which was unforeseen
   */
   val divisionByZero: UIO[Int] = ZIO.succeed(1 / 0)
   val failedInt: ZIO[Any, String, Int] = ZIO.fail("I failed!")
@@ -103,7 +123,6 @@ object ZIOErrorHandling extends ZIOAppDefault {
    */
 
   def callHTTPEndpoint(url: String): ZIO[Any, IOException, String] = {
-
     ZIO.fail(new IOException("no internet, dummy!"))
   }
 
@@ -130,29 +149,102 @@ object ZIOErrorHandling extends ZIOAppDefault {
    */
 
   trait AppError
+
   case class IndexError(message: String) extends AppError
+
   case class DbError(message: String) extends AppError
 
   val callApi: ZIO[Any, IndexError, String] = ZIO.succeed("page: <html></html>")
   val queryDb: ZIO[Any, DbError, Int] = ZIO.succeed(1)
   // combine in one application
-//  val combined = for {
+  //  val combined = for {
   val combined: ZIO[Any, IndexError | DbError, (String, Int)] = for { //Scala 3 ONLY
     page <- callApi
     rowsAffected <- queryDb
   } yield (page, rowsAffected) // lost type safety -- error is the lowest common ancestor - a product...
-/*
-Solutions:
-  - design an error model - can be overcome by defining a trait
-  - use Scala 3 union types
-  - .mapError to some common error type
- */
-
-  /**
-   * TODO Exercises --- 19:28
+  /*
+  Solutions:
+    - design an error model - can be overcome by defining a trait
+    - use Scala 3 union types
+    - .mapError to some common error type
    */
 
+  /**
+   * Exercises
+   */
+  // 1 - make this effect fail with a typed error
+  val aBadFailure = ZIO.succeed[Int](throw new RuntimeException("This is bad!"))
+  //----
+  val aBetterFailure = aBadFailure.sandbox // expose the defect in the cause
+  val aBetterFailure_v2 = aBadFailure.unrefine { // surfaces out the exception in the error channel
+    case e => e
+  }
+
+  // 2 - transform a zio into another zio with a narrower(same as refining) exception type
+  def ioException[R, A](zio: ZIO[R, Throwable, A]): ZIO[R, IOException, A] = {
+    zio.refineOrDie {
+      case ioe: IOException => ioe
+    }
+  }
+
+  // 3
+  def left[R, E, A, B](zio: ZIO[R, E ,Either[A, B]]): ZIO[R, Either[E, A], B] = {
+    zio.foldZIO(
+      e => ZIO.fail(Left(e)),
+      either => either match {
+        case Left(a) => ZIO.fail(Right(a))
+        case Right(b) => ZIO.succeed(b)
+      }
+    )
+  }
+
+  // 4
+  val database = Map(
+    "daniel" -> 123,
+    "alice" -> 789
+  )
+
+  case class QueryError(reason: String)
+  case class UserProfile(name: String, phone: Int)
+
+  def lookupProfile(userId: String): ZIO[Any, QueryError, Option[UserProfile]] =
+    if (userId != userId.toLowerCase())
+      ZIO.fail(QueryError("user ID format is invalid"))
+    else
+      ZIO.succeed(database.get(userId).map(phone => UserProfile(userId, phone)))
+
   // surface out all the failed cases of this API
+  def betterLookupProfile(userId: String):ZIO[Any, Option[QueryError], UserProfile] = {
+    lookupProfile(userId).foldZIO(
+      error => ZIO.fail(Some(error)),
+      profileOption => profileOption match {
+        case Some(profile) => ZIO.succeed(profile)
+        case None => ZIO.fail(None)
+      }
+    )
+  }
+
+  def betterLookupProfile_v2(userId: String): ZIO[Any, Option[QueryError], UserProfile] = {
+    lookupProfile(userId).some
+  }
+
+  /**
+   * Error handling
+   * - Attempt: wrap an expression that may throw
+   * - Catch/catchAll: Process potential errors
+   * - Fold/foldZIO: Process both success and failure
+   * - Conversions between Try/Either/Option to ZIO
+   * 
+   * Errors and Defects
+   * - Errors: Expected failures present in the type signature
+   * - Defects: Unforeseen failures, not present in the type signature
+   * How to handle
+   * -> Turn failures in to defects (.orDie).
+   * -> Narrow failure type, leave the rest as defects.
+   * -> Treat failure causes, including defects.
+   * 
+   * 
+   */
 
   override def run = ???
 
